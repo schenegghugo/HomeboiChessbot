@@ -5,126 +5,330 @@
 #include <vector>
 #include <algorithm>
 #include <iostream>
+#include <chrono>
+#include <cstdint>
 #include "board.h"
 #include "movegen.h"
 #include "makemove.h"
 #include "pem.h"
 
-// --- MOVE ORDERING (MVV-LVA) ---
-// Calculate a "guess" score for a move. 
-// We want to look at capturing a Queen with a Pawn FIRST!
-inline int scoreMove(const BoardState& board, Move move) {
+// --- TIME MANAGEMENT GLOBALS ---
+inline long long startTime = 0;
+inline long long allocatedTime = 0;
+inline bool timeIsUp = false;
+inline int nodesSearched = 0;
+
+inline long long getTimeMs() {
+    return std::chrono::duration_cast<std::chrono::milliseconds>(
+        std::chrono::system_clock::now().time_since_epoch()
+    ).count();
+}
+
+// --- THE TRANSPOSITION TABLE (THE VAULT) ---
+const int hashfEXACT = 0; 
+const int hashfALPHA = 1; 
+const int hashfBETA  = 2; 
+
+struct TTEntry {
+    uint64_t hashKey;
+    int depth;
+    int flag;
+    int score;
+    int bestMoveFrom;
+    int bestMoveTo;
+};
+
+const int TT_SIZE = 4194304; 
+const int TT_MASK = TT_SIZE - 1;
+inline std::vector<TTEntry> TT(TT_SIZE);
+
+// --- KILLER MOVES ---
+const int MAX_PLY = 64;
+inline Move killerMoves[MAX_PLY][2];
+
+// --- MOVE ORDERING ---
+inline int scoreMove(const BoardState& board, Move move, int ttFrom, int ttTo, int plyFromRoot) {
+    // 1. TT Move is king
+    if (move.fromSquare == ttFrom && move.toSquare == ttTo) {
+        return 10000000; 
+    }
+
     int movingPiece = board.squares[move.fromSquare];
     int targetPiece = board.squares[move.toSquare];
 
+    // 2. Captures (MVV-LVA)
     if (targetPiece != EMPTY) {
         int attackerValue = getPieceValue(movingPiece) / 100;
         int victimValue = getPieceValue(targetPiece) / 100;
-        
-        // Example: Pawn(1) takes Queen(9) = (10 * 9) - 1 = 89 (Searched immediately)
-        // Example: Queen(9) takes Pawn(1) = (10 * 1) - 9 = 1 (Searched later)
-        return (10 * victimValue) - attackerValue;
+        return 1000000 + (10 * victimValue) - attackerValue; 
     }
-    return 0; // Not a capture
+    
+    // 3. Killer Moves (Quiet moves that caused a cutoff earlier)
+    if (plyFromRoot < MAX_PLY) {
+        if (killerMoves[plyFromRoot][0].fromSquare == move.fromSquare && killerMoves[plyFromRoot][0].toSquare == move.toSquare) {
+            return 900000;
+        }
+        if (killerMoves[plyFromRoot][1].fromSquare == move.fromSquare && killerMoves[plyFromRoot][1].toSquare == move.toSquare) {
+            return 800000;
+        }
+    }
+
+    return 0; 
 }
 
-// The Negamax Alpha-Beta Algorithm
-inline int negamax(BoardState& board, int depth, int alpha, int beta) {
-    // 1. Base Case: We hit our depth limit. Call the PEM!
-    if (depth == 0) {
-        return evaluate(board);
+// --- QUIESCENCE SEARCH ---
+inline int quiescence(BoardState& board, int alpha, int beta, int plyFromRoot) {
+    if ((nodesSearched++ & 2047) == 0) {
+        if (getTimeMs() - startTime > allocatedTime) timeIsUp = true;
     }
+    if (timeIsUp) return 0;
 
-    // Notice we use the fast PSEUDO-LEGAL generator inside the search tree!
+    int standPat = evaluate(board);
+    if (standPat >= beta) return beta;
+    if (alpha < standPat) alpha = standPat;
+
     std::vector<Move> moves = generateMoves(board);
-    
-    // If there are no moves, it's either checkmate or stalemate
-    if (moves.empty()) {
-        return -99999 + (10 - depth); // Prefer longer survival
+    std::vector<Move> captures;
+    for (Move m : moves) {
+        if (board.squares[m.toSquare] != EMPTY) {
+            captures.push_back(m);
+        }
     }
 
-    // --- THE MAGIC: SORT THE MOVES! ---
-    std::sort(moves.begin(), moves.end(), [&board](Move a, Move b) {
-        return scoreMove(board, a) > scoreMove(board, b);
+    std::sort(captures.begin(), captures.end(), [&board, plyFromRoot](Move a, Move b) {
+        return scoreMove(board, a, -1, -1, plyFromRoot) > scoreMove(board, b, -1, -1, plyFromRoot);
     });
 
-    int bestScore = -1000000; // Start with negative infinity
-
-    // 2. Loop through all possible futures
-    for (Move move : moves) {
-        
-        // --- KING CAPTURE DETECTION (THE SPEED TRICK) ---
-        // Because our move generator is "pseudo-legal", it generates moves
-        // even if it leaves our King in check. 
-        // If we see we can eat the opponent's King in this timeline, 
-        // this timeline is an INSTANT WIN. No need to look further!
+    for (Move move : captures) {
         int targetPiece = board.squares[move.toSquare];
-        if (targetPiece == W_KING || targetPiece == B_KING) {
-            return 100000; 
-        }
+        if (targetPiece == W_KING || targetPiece == B_KING) return 100000;
 
-        // Time Travel: Jump into the future
         UndoData undo = makeMove(board, move);
-        
-        // Recursion
-        int currentScore = -negamax(board, depth - 1, -beta, -alpha);
-        
-        // Time Travel: Rewind the board
+        int score = -quiescence(board, -beta, -alpha, plyFromRoot + 1);
         undoMove(board, move, undo);
 
-        // 3. Alpha-Beta Pruning
+        if (timeIsUp) return 0;
+
+        if (score >= beta) return beta; 
+        if (score > alpha) alpha = score;
+    }
+
+    return alpha;
+}
+
+// --- NEGAMAX WITH NULL MOVE, KILLERS & LMR ---
+inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFromRoot, bool allowNull = true) {
+    int alphaOrig = alpha; 
+
+    if ((nodesSearched++ & 2047) == 0) {
+        if (getTimeMs() - startTime > allocatedTime) timeIsUp = true;
+    }
+    if (timeIsUp) return 0;
+
+    if (board.ply > 0 && isRepetition(board)) return 0; 
+
+    int ttFrom = -1;
+    int ttTo = -1;
+    TTEntry& ttEntry = TT[board.hashKey & TT_MASK]; 
+
+    if (ttEntry.hashKey == board.hashKey) {
+        ttFrom = ttEntry.bestMoveFrom;
+        ttTo = ttEntry.bestMoveTo;
+        if (ttEntry.depth >= depth) {
+            if (ttEntry.flag == hashfEXACT) return ttEntry.score;
+            if (ttEntry.flag == hashfALPHA && ttEntry.score <= alpha) return alpha;
+            if (ttEntry.flag == hashfBETA && ttEntry.score >= beta) return beta;
+        }
+    }
+
+    if (depth <= 0) {
+        return quiescence(board, alpha, beta, plyFromRoot);
+    }
+
+    bool currentlyInCheck = inCheck(board, board.sideToMove);
+    
+    // Null Move Pruning
+    if (allowNull && depth >= 3 && !currentlyInCheck) {
+        int staticEval = evaluate(board);
+        if (staticEval >= beta) {
+            BoardState nullBoard = board;
+            nullBoard.sideToMove = (board.sideToMove == WHITE) ? BLACK : WHITE;
+            nullBoard.enPassantSquare = -1; 
+            
+            int R = 2; 
+            int nullScore = -negamax(nullBoard, depth - 1 - R, -beta, -beta + 1, plyFromRoot + 1, false);
+            
+            if (nullScore >= beta) return beta; 
+        }
+    }
+
+    std::vector<Move> moves = generateMoves(board);
+    if (moves.empty()) return -99999 + plyFromRoot; 
+
+    std::sort(moves.begin(), moves.end(), [&board, ttFrom, ttTo, plyFromRoot](Move a, Move b) {
+        return scoreMove(board, a, ttFrom, ttTo, plyFromRoot) > scoreMove(board, b, ttFrom, ttTo, plyFromRoot);
+    });
+
+    int bestScore = -1000000;
+    Move bestMoveThisNode = moves[0];
+    int movesSearched = 0; // Track for LMR
+
+    for (Move move : moves) {
+        int targetPiece = board.squares[move.toSquare];
+        if (targetPiece == W_KING || targetPiece == B_KING) return 100000; 
+
+        UndoData undo = makeMove(board, move);
+        
+        bool givesCheck = inCheck(board, board.sideToMove);
+        int extension = (givesCheck && depth < 20) ? 1 : 0;
+        bool isQuiet = (targetPiece == EMPTY) && !givesCheck && (move.promotedPiece == EMPTY);
+
+        int currentScore;
+
+        // --- LATE MOVE REDUCTIONS (LMR) ---
+        // If we've already searched 3 moves, and this is a quiet move, skip ahead!
+        if (movesSearched >= 3 && depth >= 3 && isQuiet) {
+            int reduction = (movesSearched > 6) ? 2 : 1; 
+            
+            // Search shallower
+            currentScore = -negamax(board, depth - 1 - reduction, -beta, -alpha, plyFromRoot + 1, true);
+            
+            // Oops, it was actually a good move! Re-search at full depth.
+            if (currentScore > alpha) {
+                currentScore = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, true);
+            }
+        } else {
+            // Normal Search (for first moves, captures, and checks)
+            currentScore = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, true);
+        }
+        
+        undoMove(board, move, undo);
+        movesSearched++;
+
+        if (timeIsUp) return 0;
+
         if (currentScore > bestScore) {
             bestScore = currentScore;
+            bestMoveThisNode = move;
         }
-        if (bestScore > alpha) {
-            alpha = bestScore;
-        }
+        if (bestScore > alpha) alpha = bestScore;
+        
         if (alpha >= beta) {
-            break; // The opponent would never let us get this timeline. Prune it!
+            // --- RECORD KILLER MOVE ---
+            if (board.squares[move.toSquare] == EMPTY && plyFromRoot < MAX_PLY) {
+                if (move.fromSquare != killerMoves[plyFromRoot][0].fromSquare || move.toSquare != killerMoves[plyFromRoot][0].toSquare) {
+                    killerMoves[plyFromRoot][1] = killerMoves[plyFromRoot][0];
+                    killerMoves[plyFromRoot][0] = move;
+                }
+            }
+            break; 
         }
+    }
+
+    if (!timeIsUp) {
+        ttEntry.hashKey = board.hashKey;
+        ttEntry.depth = depth;
+        ttEntry.score = bestScore;
+        ttEntry.bestMoveFrom = bestMoveThisNode.fromSquare;
+        ttEntry.bestMoveTo = bestMoveThisNode.toSquare;
+
+        if (bestScore <= alphaOrig) ttEntry.flag = hashfALPHA;
+        else if (bestScore >= beta) ttEntry.flag = hashfBETA;
+        else ttEntry.flag = hashfEXACT;
     }
 
     return bestScore;
 }
 
-// The function we call from main.cpp to find the best move
-inline Move getBestMove(BoardState& board, int depth) {
-    // 1. USE STRICT LEGAL MOVES ONLY AT THE ROOT!
-    // This physically prevents the engine from choosing a move that leaves us in check.
-    std::vector<Move> moves = getLegalMoves(board); 
+// --- ITERATIVE DEEPENING & SMART TIME MANAGEMENT ---
+inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
+    startTime = getTimeMs();
     
-    // 2. CHECKMATE PREVENTION: If there are absolutely no legal moves,
-    // the game is over. Return a dummy move so we don't crash trying to access moves[0].
+    std::vector<Move> moves = getLegalMoves(board); 
     if (moves.empty()) {
         std::cout << "bestmove 0000\n";
         return Move(0, 0, Flag_None, EMPTY); 
     }
 
-    // --- SORT ROOT MOVES TOO ---
-    std::sort(moves.begin(), moves.end(), [&board](Move a, Move b) {
-        return scoreMove(board, a) > scoreMove(board, b);
-    });
+    // 1. FORCED MOVE RULE: Don't think if we don't have a choice!
+    if (moves.size() == 1) {
+        std::cout << "info string Only 1 legal move! Playing instantly.\n";
+        return moves[0];
+    }
 
-    Move bestMove = moves[0];
-    int bestScore = -1000000;
+    // 2. DYNAMIC TIME LIMITS
+    long long softTimeLimit = baseTimeMs;           
+    long long hardTimeLimit = baseTimeMs * 3;       
+    allocatedTime = hardTimeLimit;                  
+    
+    timeIsUp = false;
+    nodesSearched = 0;
 
-    for (Move move : moves) {
-        UndoData undo = makeMove(board, move);
+    // Clear Killer Moves from previous turns
+    for (int i = 0; i < MAX_PLY; i++) {
+        killerMoves[i][0] = Move(0, 0, Flag_None, EMPTY);
+        killerMoves[i][1] = Move(0, 0, Flag_None, EMPTY);
+    }
+
+    Move bestMoveOverall = moves[0];
+    Move previousBestMove = moves[0];
+
+    for (int depth = 1; depth <= MAX_PLY; depth++) {
+        Move bestMoveThisDepth = moves[0];
+        int bestScoreThisDepth = -1000000;
+
+        int ttFrom = -1, ttTo = -1;
+        if (TT[board.hashKey & TT_MASK].hashKey == board.hashKey) {
+            ttFrom = TT[board.hashKey & TT_MASK].bestMoveFrom;
+            ttTo = TT[board.hashKey & TT_MASK].bestMoveTo;
+        }
+
+        std::sort(moves.begin(), moves.end(), [&board, ttFrom, ttTo](Move a, Move b) {
+            return scoreMove(board, a, ttFrom, ttTo, 0) > scoreMove(board, b, ttFrom, ttTo, 0);
+        });
+
+        for (Move move : moves) {
+            UndoData undo = makeMove(board, move);
+            
+            bool givesCheck = inCheck(board, board.sideToMove);
+            int extension = givesCheck ? 1 : 0;
+            
+            int score = -negamax(board, depth - 1 + extension, -1000000, 1000000, 1, true);
+            undoMove(board, move, undo);
+
+            if (timeIsUp) break;
+
+            if (score > bestScoreThisDepth) {
+                bestScoreThisDepth = score;
+                bestMoveThisDepth = move;
+            }
+        }
+
+        if (timeIsUp) break; 
+
+        bestMoveOverall = bestMoveThisDepth;
+        long long timeSpent = getTimeMs() - startTime;
+
+        std::cout << "info depth " << depth << " score cp " << bestScoreThisDepth 
+                  << " time " << timeSpent << " nodes " << nodesSearched << "\n";
         
-        // Evaluate this move using Alpha-Beta
-        int score = -negamax(board, depth - 1, -1000000, 1000000);
-        
-        undoMove(board, move, undo);
+        // 3. COMPLEXITY SCALING: Did we change our mind? Give more time!
+        if (depth > 1 && (bestMoveOverall.fromSquare != previousBestMove.fromSquare || bestMoveOverall.toSquare != previousBestMove.toSquare)) {
+            softTimeLimit += baseTimeMs / 2; 
+            if (softTimeLimit > hardTimeLimit) softTimeLimit = hardTimeLimit;
+        }
+        previousBestMove = bestMoveOverall;
 
-        // Update the best move if we found a better score
-        if (score > bestScore) {
-            bestScore = score;
-            bestMove = move;
+        if (bestScoreThisDepth > 90000 || bestScoreThisDepth < -90000) break; // Found a mate
+
+        // 4. SOFT LIMIT CHECK: Do we have enough time to finish the next depth?
+        // If we've already used 60% of our ideal time limit, stop cleanly to avoid flagging.
+        if (timeSpent > softTimeLimit * 0.6) {
+            break; 
         }
     }
 
-    std::cout << "info depth " << depth << " score cp " << bestScore << "\n";    
-    return bestMove;
+    return bestMoveOverall;
 }
 
 #endif

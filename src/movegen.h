@@ -19,7 +19,7 @@ inline bool isEnemy(int piece, int friendlyColor) {
     return isColor(piece, enemyColor);
 }
 
-// NEW: Highly optimized function to check if a square is attacked by the enemy.
+// Highly optimized function to check if a square is attacked by the enemy.
 // This is MANDATORY for Castling (King cannot pass through or into check).
 inline bool isSquareAttacked(const BoardState& board, int square, int attackerColor) {
     // 1. Pawns (Look backwards to see if an enemy pawn is attacking this square)
@@ -263,6 +263,28 @@ inline std::string moveToUCI(Move move) {
         else if (move.promotedPiece == W_KNIGHT || move.promotedPiece == B_KNIGHT) uci += 'n';
     }
     return uci;
+}
+
+// --- FAST CHECK DETECTION ---
+inline bool inCheck(const BoardState& board, int color) {
+    int kingPiece = (color == WHITE) ? W_KING : B_KING;
+    int kingSquare = -1;
+    
+    // Find the King
+    for (int i = 0; i < 64; i++) {
+        if (board.squares[i] == kingPiece) {
+            kingSquare = i;
+            break;
+        }
+    }
+    
+    // Check if that square is attacked by the enemy
+    if (kingSquare != -1) {
+        int enemyColor = (color == WHITE) ? BLACK : WHITE;
+        return isSquareAttacked(board, kingSquare, enemyColor);
+    }
+    
+    return false;
 }
 
 #endif
