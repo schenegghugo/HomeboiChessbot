@@ -48,58 +48,63 @@ inline Move killerMoves[MAX_PLY][2];
 
 // --- MOVE ORDERING ---
 inline int scoreMove(const BoardState& board, Move move, int ttFrom, int ttTo, int plyFromRoot) {
-    // 1. TT Move is king
-    if (move.fromSquare == ttFrom && move.toSquare == ttTo) {
-        return 10000000; 
-    }
+    if (move.fromSquare == ttFrom && move.toSquare == ttTo) return 10000000; 
 
     int movingPiece = board.squares[move.fromSquare];
     int targetPiece = board.squares[move.toSquare];
 
-    // 2. Captures (MVV-LVA)
     if (targetPiece != EMPTY) {
         int attackerValue = getPieceValue(movingPiece) / 100;
         int victimValue = getPieceValue(targetPiece) / 100;
         return 1000000 + (10 * victimValue) - attackerValue; 
     }
     
-    // 3. Killer Moves (Quiet moves that caused a cutoff earlier)
     if (plyFromRoot < MAX_PLY) {
-        if (killerMoves[plyFromRoot][0].fromSquare == move.fromSquare && killerMoves[plyFromRoot][0].toSquare == move.toSquare) {
-            return 900000;
-        }
-        if (killerMoves[plyFromRoot][1].fromSquare == move.fromSquare && killerMoves[plyFromRoot][1].toSquare == move.toSquare) {
-            return 800000;
-        }
+        if (killerMoves[plyFromRoot][0].fromSquare == move.fromSquare && killerMoves[plyFromRoot][0].toSquare == move.toSquare) return 900000;
+        if (killerMoves[plyFromRoot][1].fromSquare == move.fromSquare && killerMoves[plyFromRoot][1].toSquare == move.toSquare) return 800000;
     }
 
     return 0; 
 }
 
-// --- QUIESCENCE SEARCH ---
+// --- QUIESCENCE SEARCH (WITH CHECK EVASIONS) ---
 inline int quiescence(BoardState& board, int alpha, int beta, int plyFromRoot) {
     if ((nodesSearched++ & 2047) == 0) {
         if (getTimeMs() - startTime > allocatedTime) timeIsUp = true;
     }
     if (timeIsUp) return 0;
 
-    int standPat = evaluate(board);
-    if (standPat >= beta) return beta;
-    if (alpha < standPat) alpha = standPat;
+    if (plyFromRoot >= MAX_PLY - 1) return evaluate(board);
+
+    bool isInCheck = inCheck(board, board.sideToMove);
+    int standPat = -1000000;
+
+    if (!isInCheck) {
+        standPat = evaluate(board);
+        if (standPat >= beta) return beta;
+        if (alpha < standPat) alpha = standPat;
+    }
 
     std::vector<Move> moves = generateMoves(board);
-    std::vector<Move> captures;
-    for (Move m : moves) {
-        if (board.squares[m.toSquare] != EMPTY) {
-            captures.push_back(m);
+    std::vector<Move> movesToSearch;
+
+    if (isInCheck) {
+        movesToSearch = moves;
+    } else {
+        for (Move m : moves) {
+            if (board.squares[m.toSquare] != EMPTY) {
+                movesToSearch.push_back(m);
+            }
         }
     }
 
-    std::sort(captures.begin(), captures.end(), [&board, plyFromRoot](Move a, Move b) {
+    std::sort(movesToSearch.begin(), movesToSearch.end(), [&board, plyFromRoot](Move a, Move b) {
         return scoreMove(board, a, -1, -1, plyFromRoot) > scoreMove(board, b, -1, -1, plyFromRoot);
     });
 
-    for (Move move : captures) {
+    int bestScore = isInCheck ? -1000000 : standPat;
+
+    for (Move move : movesToSearch) {
         int targetPiece = board.squares[move.toSquare];
         if (targetPiece == W_KING || targetPiece == B_KING) return 100000;
 
@@ -109,14 +114,19 @@ inline int quiescence(BoardState& board, int alpha, int beta, int plyFromRoot) {
 
         if (timeIsUp) return 0;
 
+        if (score > bestScore) bestScore = score;
         if (score >= beta) return beta; 
         if (score > alpha) alpha = score;
+    }
+
+    if (isInCheck && bestScore <= -90000) {
+        return -99999 + plyFromRoot; 
     }
 
     return alpha;
 }
 
-// --- NEGAMAX WITH NULL MOVE, KILLERS & LMR ---
+// --- NEGAMAX WITH PVS, NULL MOVE, KILLERS & LMR ---
 inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFromRoot, bool allowNull = true) {
     int alphaOrig = alpha; 
 
@@ -127,8 +137,7 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
 
     if (board.ply > 0 && isRepetition(board)) return 0; 
 
-    int ttFrom = -1;
-    int ttTo = -1;
+    int ttFrom = -1, ttTo = -1;
     TTEntry& ttEntry = TT[board.hashKey & TT_MASK]; 
 
     if (ttEntry.hashKey == board.hashKey) {
@@ -141,9 +150,7 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
         }
     }
 
-    if (depth <= 0) {
-        return quiescence(board, alpha, beta, plyFromRoot);
-    }
+    if (depth <= 0) return quiescence(board, alpha, beta, plyFromRoot);
 
     bool currentlyInCheck = inCheck(board, board.sideToMove);
     
@@ -157,7 +164,6 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
             
             int R = 2; 
             int nullScore = -negamax(nullBoard, depth - 1 - R, -beta, -beta + 1, plyFromRoot + 1, false);
-            
             if (nullScore >= beta) return beta; 
         }
     }
@@ -171,7 +177,7 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
 
     int bestScore = -1000000;
     Move bestMoveThisNode = moves[0];
-    int movesSearched = 0; // Track for LMR
+    int movesSearched = 0; 
 
     for (Move move : moves) {
         int targetPiece = board.squares[move.toSquare];
@@ -185,21 +191,24 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
 
         int currentScore;
 
-        // --- LATE MOVE REDUCTIONS (LMR) ---
-        // If we've already searched 3 moves, and this is a quiet move, skip ahead!
-        if (movesSearched >= 3 && depth >= 3 && isQuiet) {
-            int reduction = (movesSearched > 6) ? 2 : 1; 
-            
-            // Search shallower
-            currentScore = -negamax(board, depth - 1 - reduction, -beta, -alpha, plyFromRoot + 1, true);
-            
-            // Oops, it was actually a good move! Re-search at full depth.
-            if (currentScore > alpha) {
+        // --- PRINCIPAL VARIATION SEARCH (PVS) ---
+        if (movesSearched == 0) {
+            currentScore = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, true);
+        } else {
+            if (movesSearched >= 3 && depth >= 3 && isQuiet) {
+                int reduction = (movesSearched > 6) ? 2 : 1; 
+                currentScore = -negamax(board, depth - 1 - reduction, -alpha - 1, -alpha, plyFromRoot + 1, true);
+                
+                if (currentScore > alpha) {
+                    currentScore = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, plyFromRoot + 1, true);
+                }
+            } else {
+                currentScore = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, plyFromRoot + 1, true);
+            }
+
+            if (currentScore > alpha && currentScore < beta) {
                 currentScore = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, true);
             }
-        } else {
-            // Normal Search (for first moves, captures, and checks)
-            currentScore = -negamax(board, depth - 1 + extension, -beta, -alpha, plyFromRoot + 1, true);
         }
         
         undoMove(board, move, undo);
@@ -214,7 +223,6 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
         if (bestScore > alpha) alpha = bestScore;
         
         if (alpha >= beta) {
-            // --- RECORD KILLER MOVE ---
             if (board.squares[move.toSquare] == EMPTY && plyFromRoot < MAX_PLY) {
                 if (move.fromSquare != killerMoves[plyFromRoot][0].fromSquare || move.toSquare != killerMoves[plyFromRoot][0].toSquare) {
                     killerMoves[plyFromRoot][1] = killerMoves[plyFromRoot][0];
@@ -240,7 +248,7 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
     return bestScore;
 }
 
-// --- ITERATIVE DEEPENING & SMART TIME MANAGEMENT ---
+// --- ITERATIVE DEEPENING & SMART TIME MANAGEMENT (PVS ROOT) ---
 inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     startTime = getTimeMs();
     
@@ -250,13 +258,11 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
         return Move(0, 0, Flag_None, EMPTY); 
     }
 
-    // 1. FORCED MOVE RULE: Don't think if we don't have a choice!
     if (moves.size() == 1) {
         std::cout << "info string Only 1 legal move! Playing instantly.\n";
         return moves[0];
     }
 
-    // 2. DYNAMIC TIME LIMITS
     long long softTimeLimit = baseTimeMs;           
     long long hardTimeLimit = baseTimeMs * 3;       
     allocatedTime = hardTimeLimit;                  
@@ -264,7 +270,6 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     timeIsUp = false;
     nodesSearched = 0;
 
-    // Clear Killer Moves from previous turns
     for (int i = 0; i < MAX_PLY; i++) {
         killerMoves[i][0] = Move(0, 0, Flag_None, EMPTY);
         killerMoves[i][1] = Move(0, 0, Flag_None, EMPTY);
@@ -276,6 +281,10 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     for (int depth = 1; depth <= MAX_PLY; depth++) {
         Move bestMoveThisDepth = moves[0];
         int bestScoreThisDepth = -1000000;
+        
+        int alpha = -1000000;
+        int beta = 1000000;
+        int movesSearched = 0;
 
         int ttFrom = -1, ttTo = -1;
         if (TT[board.hashKey & TT_MASK].hashKey == board.hashKey) {
@@ -292,9 +301,19 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
             
             bool givesCheck = inCheck(board, board.sideToMove);
             int extension = givesCheck ? 1 : 0;
+            int score;
             
-            int score = -negamax(board, depth - 1 + extension, -1000000, 1000000, 1, true);
+            if (movesSearched == 0) {
+                score = -negamax(board, depth - 1 + extension, -beta, -alpha, 1, true);
+            } else {
+                score = -negamax(board, depth - 1 + extension, -alpha - 1, -alpha, 1, true);
+                if (score > alpha && score < beta) {
+                    score = -negamax(board, depth - 1 + extension, -beta, -alpha, 1, true);
+                }
+            }
+
             undoMove(board, move, undo);
+            movesSearched++;
 
             if (timeIsUp) break;
 
@@ -302,6 +321,7 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
                 bestScoreThisDepth = score;
                 bestMoveThisDepth = move;
             }
+            if (score > alpha) alpha = score;
         }
 
         if (timeIsUp) break; 
@@ -312,17 +332,14 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
         std::cout << "info depth " << depth << " score cp " << bestScoreThisDepth 
                   << " time " << timeSpent << " nodes " << nodesSearched << "\n";
         
-        // 3. COMPLEXITY SCALING: Did we change our mind? Give more time!
         if (depth > 1 && (bestMoveOverall.fromSquare != previousBestMove.fromSquare || bestMoveOverall.toSquare != previousBestMove.toSquare)) {
             softTimeLimit += baseTimeMs / 2; 
             if (softTimeLimit > hardTimeLimit) softTimeLimit = hardTimeLimit;
         }
         previousBestMove = bestMoveOverall;
 
-        if (bestScoreThisDepth > 90000 || bestScoreThisDepth < -90000) break; // Found a mate
+        if (bestScoreThisDepth > 90000 || bestScoreThisDepth < -90000) break;
 
-        // 4. SOFT LIMIT CHECK: Do we have enough time to finish the next depth?
-        // If we've already used 60% of our ideal time limit, stop cleanly to avoid flagging.
         if (timeSpent > softTimeLimit * 0.6) {
             break; 
         }

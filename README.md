@@ -61,10 +61,10 @@ Chessboi has crossed the threshold into a competitive search engine. The next ma
 - [x] **Time Management:** Iterative Deepening and dynamic clock scaling.
 - [x] **Transposition Tables:** Zobrist Hashing for position recall.
 - [x] **Quiescence Search:** Defeating the Horizon Effect.
-- [ ] **Principal Variation Search (PVS):** A zero-window search algorithm to squeeze even more tactical depth out of the engine and eliminate 1000-centipawn blunders.
+- [x] **Principal Variation Search (PVS):** A zero-window search algorithm to squeeze even more tactical depth out of the engine and eliminate 1000-centipawn blunders.
 - [ ] **Advanced Positional Evaluation:** Penalizing doubled/isolated pawns and rewarding piece mobility to prevent getting squeezed in the middlegame.
 - [ ] **Opening Book Support:** Allowing Chessboi to read `.bin` Polyglot opening books to survive aggressive theory.
-- [ ] **Check Evasions in Q-Search:** Expanding Quiescence Search to handle forcing checks, not just captures.
+- [x] **Check Evasions in Q-Search:** Expanding Quiescence Search to handle forcing checks, not just captures.
 
 ## Author
 Created by **Hugo Schenegg**. 
