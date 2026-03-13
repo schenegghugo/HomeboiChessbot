@@ -1,8 +1,9 @@
 # HomeboiChessbot
 **HomeboiChessbot** (aka Chessboi) is a fully functional, UCI-compatible chess engine written from scratch in C++. 
 
-## Features (v2.2 - The Positional Update)
+## Features (v2.3 - The Theory Update)
 * **Protocol:** Fully supports the Universal Chess Interface (UCI), allowing it to be plugged into almost any modern chess GUI.
+* **Opening Book Support:** Natively reads standard `.bin` Polyglot opening books. Loads directly into RAM for instant (`< 0.1ms`) binary-search lookups, allowing Chessboi to play grandmaster opening theory without using the clock. Uses weighted randomness to ensure varied games!
 * **Board Representation:** 1D 64-Square Array.
 * **Move Generation:** Blazing fast pseudo-legal move generation within the search tree, with strict legal-move filtering at the root to prevent illegal timelines.
 * **Search Algorithm (The Brain):** 
@@ -34,10 +35,11 @@ Because Chessboi uses the UCI protocol, it does not have its own graphical inter
 
 **Setup Instructions:**
 1. Download the compiled executable from the Releases tab (or build it yourself).
-2. Open your Chess GUI.
-3. Go to **Engine Settings** -> **Install New Engine**.
-4. Select the `chessboi` executable file.
-5. Start a new game and select Chessboi as your opponent!
+2. Download a Polyglot `.bin` opening book (e.g., `Titans.bin` or `Human.bin`) and place it in the same folder as the executable.
+3. Open your Chess GUI.
+4. Go to **Engine Settings** -> **Install New Engine**.
+5. Select the `chessboi` executable file.
+6. Start a new game and select Chessboi as your opponent!
 
 *(Note: As of v2.0, Chessboi fully supports Blitz and Bullet time controls! He will manage his own clock dynamically to avoid flagging.)*
 
@@ -66,10 +68,9 @@ Chessboi has crossed the threshold into a competitive search engine. The next ma
 - [x] **Principal Variation Search (PVS):** A zero-window search algorithm to squeeze even more tactical depth out of the engine and eliminate 1000-centipawn blunders.
 - [x] **Check Evasions in Q-Search:** Expanding Quiescence Search to handle forcing checks, not just captures.
 - [x] **Advanced Positional Evaluation:** Penalizing doubled/isolated pawns and rewarding piece mobility to prevent getting squeezed in the middlegame.
-- [ ] **Opening Book Support:** Allowing Chessboi to read `.bin` Polyglot opening books to survive aggressive theory.
+- [x] **Opening Book Support:** Allowing Chessboi to read `.bin` Polyglot opening books to survive aggressive theory.
 - [ ] **Endgame Tablebases:** Syzygy tablebase support for perfect play in 5 and 6-piece endgames.
 
 ## Author
 Created by **Hugo Schenegg**. 
 Feel free to open an issue or submit a pull request if you find a bug or want to suggest a feature!
-

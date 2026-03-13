@@ -11,6 +11,7 @@
 #include "movegen.h"
 #include "makemove.h"
 #include "pem.h"
+#include "book.h" // <-- ADD THIS
 
 // --- TIME MANAGEMENT GLOBALS ---
 inline long long startTime = 0;
@@ -135,7 +136,7 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
     }
     if (timeIsUp) return 0;
 
-    if (board.ply > 0 && isRepetition(board)) return 0; 
+//    if (board.ply > 0 && isRepetition(board)) return 0; 
 
     int ttFrom = -1, ttTo = -1;
     TTEntry& ttEntry = TT[board.hashKey & TT_MASK]; 
@@ -252,6 +253,20 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
 inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     startTime = getTimeMs();
     
+    // ==========================================
+    // 1. CHECK OPENING BOOK FIRST!
+    // ==========================================
+    // FIX: Print the actual Polyglot Hash so we can verify it against the standard!
+    std::cout << "info string Polyglot Hash: " << std::hex << computePolyglotHash(board) << std::dec << "\n";
+    Move bookMove = getBookMove(board);
+    
+    // If fromSquare and toSquare aren't 0, we found a valid book move!
+    if (bookMove.fromSquare != 0 || bookMove.toSquare != 0) {
+        std::cout << "info string Book move found! Playing instantly.\n";
+        return bookMove; // Return it immediately, bypassing the search entirely.
+    }
+    // ==========================================
+
     std::vector<Move> moves = getLegalMoves(board); 
     if (moves.empty()) {
         std::cout << "bestmove 0000\n";
@@ -279,17 +294,22 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     Move previousBestMove = moves[0];
 
     for (int depth = 1; depth <= MAX_PLY; depth++) {
-        Move bestMoveThisDepth = moves[0];
+        Move bestMoveThisDepth = previousBestMove; // FIX: default to previous best move
         int bestScoreThisDepth = -1000000;
         
         int alpha = -1000000;
         int beta = 1000000;
         int movesSearched = 0;
 
-        int ttFrom = -1, ttTo = -1;
+        // FIX: Tell the move sorter to prioritize the previous best move to break 0.00 score ties
+        int ttFrom = previousBestMove.fromSquare;
+        int ttTo = previousBestMove.toSquare;
+        
         if (TT[board.hashKey & TT_MASK].hashKey == board.hashKey) {
-            ttFrom = TT[board.hashKey & TT_MASK].bestMoveFrom;
-            ttTo = TT[board.hashKey & TT_MASK].bestMoveTo;
+            if (TT[board.hashKey & TT_MASK].bestMoveFrom != 0) {
+                ttFrom = TT[board.hashKey & TT_MASK].bestMoveFrom;
+                ttTo = TT[board.hashKey & TT_MASK].bestMoveTo;
+            }
         }
 
         std::sort(moves.begin(), moves.end(), [&board, ttFrom, ttTo](Move a, Move b) {

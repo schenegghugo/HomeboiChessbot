@@ -113,32 +113,41 @@ inline void uciLoop() {
         // --- THE NEW TIME MANAGEMENT GO COMMAND ---
         else if (command == "go") {
             int wtime = 0, btime = 0, winc = 0, binc = 0;
+            long long moveTime = 0; // Explicit movetime flag
             std::string token;
             
-            // Read all the time data Lichess sends us
+            // Read all the parameters passed with "go"
             while (iss >> token) {
                 if (token == "wtime") iss >> wtime;
                 else if (token == "btime") iss >> btime;
                 else if (token == "winc") iss >> winc;
                 else if (token == "binc") iss >> binc;
+                else if (token == "movetime") {
+                    iss >> moveTime; // Read the exact time you typed!
+                }
             }
 
-            // Figure out whose time we are looking at
-            int myTime = (board.sideToMove == WHITE) ? wtime : btime;
-            int myInc  = (board.sideToMove == WHITE) ? winc : binc;
+            long long timeLimitMs = 1000; // Default to 1 second
 
-            long long timeLimitMs = 1000; // Default to 1 second if no time is provided
+            // If the user explicitly typed 'go movetime X'
+            if (moveTime > 0) {
+                timeLimitMs = moveTime - 50; // Subtract 50ms for safety margin
+                if (timeLimitMs < 1) timeLimitMs = 1;
+            } 
+            // Otherwise, calculate time Lichess-style (wtime / btime)
+            else {
+                int myTime = (board.sideToMove == WHITE) ? wtime : btime;
+                int myInc  = (board.sideToMove == WHITE) ? winc : binc;
 
-            if (myTime > 0) {
-                // Formula: Use roughly 1/30th of our total time + half our increment
-                timeLimitMs = (myTime / 30) + (myInc / 2);
+                if (myTime > 0) {
+                    timeLimitMs = (myTime / 30) + (myInc / 2);
 
-                // Safety checks to absolutely prevent flagging
-                if (timeLimitMs >= myTime) {
-                    timeLimitMs = myTime - 500;
-                }
-                if (timeLimitMs < 50) {
-                    timeLimitMs = 50; // Absolute minimum 50ms to think
+                    if (timeLimitMs >= myTime) {
+                        timeLimitMs = myTime - 500;
+                    }
+                    if (timeLimitMs < 50) {
+                        timeLimitMs = 50; 
+                    }
                 }
             }
 
