@@ -11,7 +11,6 @@ const int RookValue   = 500;
 const int QueenValue  = 900;
 const int KingValue   = 100000;
 
-// Under the piece values so search.h can use it for move ordering!
 inline int getPieceValue(int piece) {
     switch (piece) {
         case W_PAWN:   case B_PAWN:   return PawnValue;
@@ -37,11 +36,21 @@ const int ISOLATED_PAWN_EG = -20;
 const int DOUBLED_PAWN_MG = -15;
 const int DOUBLED_PAWN_EG = -20;
 
+const int PHALANX_PAWN_MG = 10;
+const int PHALANX_PAWN_EG = 15;
+
 const int ROOK_OPEN_FILE_MG = 20;
 const int ROOK_OPEN_FILE_EG = 20;
-
 const int ROOK_SEMI_OPEN_MG = 10;
 const int ROOK_SEMI_OPEN_EG = 10;
+
+// Mobility weight per safe square
+const int BISHOP_MOBILITY_MG = 3;
+const int BISHOP_MOBILITY_EG = 4;
+const int ROOK_MOBILITY_MG = 2;
+const int ROOK_MOBILITY_EG = 3;
+const int QUEEN_MOBILITY_MG = 1;
+const int QUEEN_MOBILITY_EG = 2;
 
 // Passed pawn bonuses based on Rank (0 to 7)
 const int PASSED_PAWN_MG[8] = { 0, 5, 10, 20, 40, 70, 120, 0 };  
@@ -50,7 +59,6 @@ const int PASSED_PAWN_EG[8] = { 0, 10, 25, 50, 90, 150, 250, 0 };
 // ==========================================
 // --- MIDGAME PIECE SQUARE TABLES ---
 // ==========================================
-
 const int mg_pawnPST[64] = {
       0,  0,  0,  0,  0,  0,  0,  0,
      50, 50, 50, 50, 50, 50, 50, 50,
@@ -120,7 +128,6 @@ const int mg_kingPST[64] = {
 // ==========================================
 // --- ENDGAME PIECE SQUARE TABLES ---
 // ==========================================
-
 const int eg_pawnPST[64] = {
       0,  0,  0,  0,  0,  0,  0,  0,
     120,120,120,120,120,120,120,120,
@@ -188,7 +195,7 @@ const int eg_kingPST[64] = {
 };
 
 // ==========================================
-// --- HELPERS ---
+// --- HIGH-SPEED HELPERS ---
 // ==========================================
 
 inline bool isPassedPawn(const BoardState& board, int sq, int color) {
@@ -211,33 +218,49 @@ inline bool isPassedPawn(const BoardState& board, int sq, int color) {
     return true; 
 }
 
-inline int evaluateKingSafety(const BoardState& board, int kingSq, int color) {
+// Ultra-fast mobility raycaster (stops the engine from trapping its own pieces!)
+inline int evaluateMobility(const BoardState& board, int sq, int piece) {
+    int mobility = 0;
+    int file = sq % 8;
+    int rank = sq / 8;
+
+    // Diagonals (Bishops & Queens)
+    if (piece == W_BISHOP || piece == B_BISHOP || piece == W_QUEEN || piece == B_QUEEN) {
+        for (int r = rank + 1, f = file + 1; r < 8 && f < 8; r++, f++) { mobility++; if (board.squares[r * 8 + f] != EMPTY) break; }
+        for (int r = rank + 1, f = file - 1; r < 8 && f >= 0; r++, f--) { mobility++; if (board.squares[r * 8 + f] != EMPTY) break; }
+        for (int r = rank - 1, f = file + 1; r >= 0 && f < 8; r--, f++) { mobility++; if (board.squares[r * 8 + f] != EMPTY) break; }
+        for (int r = rank - 1, f = file - 1; r >= 0 && f >= 0; r--, f--) { mobility++; if (board.squares[r * 8 + f] != EMPTY) break; }
+    }
+    // Straights (Rooks & Queens)
+    if (piece == W_ROOK || piece == B_ROOK || piece == W_QUEEN || piece == B_QUEEN) {
+        for (int r = rank + 1; r < 8; r++) { mobility++; if (board.squares[r * 8 + file] != EMPTY) break; }
+        for (int r = rank - 1; r >= 0; r--) { mobility++; if (board.squares[r * 8 + file] != EMPTY) break; }
+        for (int f = file + 1; f < 8; f++) { mobility++; if (board.squares[rank * 8 + f] != EMPTY) break; }
+        for (int f = file - 1; f >= 0; f--) { mobility++; if (board.squares[rank * 8 + f] != EMPTY) break; }
+    }
+    return mobility;
+}
+
+// O(1) King Safety Evaluation using pre-calculated arrays (Fixes the Fianchetto Bug)
+inline int evaluateKingSafety(int kingSq, int color, const int wPawns[], const int bPawns[]) {
     int penalty = 0;
     int file = kingSq % 8;
     int rank = kingSq / 8;
 
-    if (color == WHITE && rank > 1) return -50; 
-    if (color == BLACK && rank < 6) return -50; 
+    if (color == WHITE && rank > 1) penalty -= 20; // Reduced penalty, kings can step up
+    if (color == BLACK && rank < 6) penalty -= 20; 
 
-    int forwardDir = (color == WHITE) ? 1 : -1;
-    int shieldRank = rank + forwardDir;
+    // Look at the 3 files surrounding the King
+    for (int f = std::max(0, file - 1); f <= std::min(7, file + 1); f++) {
+        int friendlyPawns = (color == WHITE) ? wPawns[f] : bPawns[f];
+        int enemyPawns = (color == WHITE) ? bPawns[f] : wPawns[f];
 
-    if (shieldRank >= 0 && shieldRank <= 7) {
-        for (int f = std::max(0, file - 1); f <= std::min(7, file + 1); f++) {
-            int piece = board.squares[shieldRank * 8 + f];
-            int friendlyPawn = (color == WHITE) ? W_PAWN : B_PAWN;
-            
-            if (piece != friendlyPawn) {
-                penalty -= 15; 
-                
-                bool fileOpen = true;
-                for (int r = 1; r < 7; r++) {
-                    if (board.squares[r * 8 + f] == W_PAWN || board.squares[r * 8 + f] == B_PAWN) {
-                        fileOpen = false;
-                        break;
-                    }
-                }
-                if (fileOpen) penalty -= 30; 
+        if (friendlyPawns == 0) {
+            penalty -= 15; // Missing pawn shield on this file
+            if (enemyPawns == 0) {
+                penalty -= 25; // Fully open file crashing into the King!
+            } else {
+                penalty -= 10; // Semi-open file
             }
         }
     }
@@ -259,7 +282,7 @@ inline int evaluate(const BoardState& board) {
     int wBishops = 0;
     int bBishops = 0;
 
-    // Track pawn files for structure evaluation
+    // Pre-calculate pawn arrays for O(1) structure logic
     int wPawns[8] = {0};
     int bPawns[8] = {0};
 
@@ -279,6 +302,7 @@ inline int evaluate(const BoardState& board) {
 
         int mgValue = 0;
         int egValue = 0;
+        int mob = 0;
 
         switch (piece) {
             case W_PAWN:   
@@ -293,13 +317,13 @@ inline int evaluate(const BoardState& board) {
                     egValue += PASSED_PAWN_EG[r];
                 }
 
-                // Doubled Pawns Penalty
+                // Doubled Pawns
                 if ((color == WHITE && wPawns[file] > 1) || (color == BLACK && bPawns[file] > 1)) {
                     mgValue += DOUBLED_PAWN_MG;
                     egValue += DOUBLED_PAWN_EG;
                 }
 
-                // Isolated Pawns Penalty
+                // Isolated Pawns
                 {
                     bool isolated = true;
                     if (color == WHITE) {
@@ -314,6 +338,12 @@ inline int evaluate(const BoardState& board) {
                         egValue += ISOLATED_PAWN_EG;
                     }
                 }
+
+                // NEW: Phalanx Pawns (Two pawns side by side controlling center)
+                if (file < 7 && board.squares[square + 1] == piece) {
+                    mgValue += PHALANX_PAWN_MG;
+                    egValue += PHALANX_PAWN_EG;
+                }
                 break;
 
             case W_KNIGHT: 
@@ -327,6 +357,11 @@ inline int evaluate(const BoardState& board) {
             case B_BISHOP: 
                 mgValue = BishopValue + mg_bishopPST[index];
                 egValue = BishopValue + eg_bishopPST[index];
+                
+                mob = evaluateMobility(board, square, piece);
+                mgValue += mob * BISHOP_MOBILITY_MG;
+                egValue += mob * BISHOP_MOBILITY_EG;
+
                 gamePhase += 1; 
                 if (color == WHITE) wBishops++;
                 else bBishops++;
@@ -336,9 +371,14 @@ inline int evaluate(const BoardState& board) {
             case B_ROOK:   
                 mgValue = RookValue + mg_rookPST[index];
                 egValue = RookValue + eg_rookPST[index];
+                
+                mob = evaluateMobility(board, square, piece);
+                mgValue += mob * ROOK_MOBILITY_MG;
+                egValue += mob * ROOK_MOBILITY_EG;
+
                 gamePhase += 2; 
 
-                // Rooks on Open / Semi-Open Files
+                // Open / Semi-Open Files
                 if (wPawns[file] == 0 && bPawns[file] == 0) {
                     mgValue += ROOK_OPEN_FILE_MG;
                     egValue += ROOK_OPEN_FILE_EG;
@@ -352,6 +392,11 @@ inline int evaluate(const BoardState& board) {
             case B_QUEEN:  
                 mgValue = QueenValue + mg_queenPST[index];
                 egValue = QueenValue + eg_queenPST[index];
+                
+                mob = evaluateMobility(board, square, piece);
+                mgValue += mob * QUEEN_MOBILITY_MG;
+                egValue += mob * QUEEN_MOBILITY_EG;
+
                 gamePhase += 4; 
                 break;
 
@@ -375,27 +420,17 @@ inline int evaluate(const BoardState& board) {
 
     // --- POSITIONAL BONUSES FOR ENTIRE BOARD ---
 
-    // The Bishop Pair
-    if (wBishops >= 2) {
-        mgScore += BISHOP_PAIR_MG;
-        egScore += BISHOP_PAIR_EG;
-    }
-    if (bBishops >= 2) {
-        mgScore -= BISHOP_PAIR_MG;
-        egScore -= BISHOP_PAIR_EG;
-    }
+    if (wBishops >= 2) { mgScore += BISHOP_PAIR_MG; egScore += BISHOP_PAIR_EG; }
+    if (bBishops >= 2) { mgScore -= BISHOP_PAIR_MG; egScore -= BISHOP_PAIR_EG; }
 
-    // Apply King Safety penalties (ONLY to mgScore! It fades out naturally in the endgame)
-    if (whiteKingSq != -1) mgScore += evaluateKingSafety(board, whiteKingSq, WHITE);
-    if (blackKingSq != -1) mgScore -= evaluateKingSafety(board, blackKingSq, BLACK); 
+    // Fast O(1) King Safety
+    if (whiteKingSq != -1) mgScore += evaluateKingSafety(whiteKingSq, WHITE, wPawns, bPawns);
+    if (blackKingSq != -1) mgScore -= evaluateKingSafety(blackKingSq, BLACK, wPawns, bPawns); 
 
-    // --- THE MAGIC BLEND (Tapered Eval) ---
+    // --- TAPERED EVAL BLEND ---
     if (gamePhase > 24) gamePhase = 24;
-    
-    // Smoothly transition between Midgame and Endgame scores
     int finalScore = (mgScore * gamePhase + egScore * (24 - gamePhase)) / 24;
 
-    // Return relative to the side whose turn it is
     return (board.sideToMove == WHITE) ? finalScore : -finalScore;
 }
 
