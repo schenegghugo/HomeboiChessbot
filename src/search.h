@@ -11,7 +11,7 @@
 #include "movegen.h"
 #include "makemove.h"
 #include "pem.h"
-#include "book.h" // <-- ADD THIS
+#include "book.h"
 
 // --- TIME MANAGEMENT GLOBALS ---
 inline long long startTime = 0;
@@ -136,7 +136,8 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
     }
     if (timeIsUp) return 0;
 
-//    if (board.ply > 0 && isRepetition(board)) return 0; 
+    // FIX 1: Uncommented the 3-fold repetition check so it stops drawing won games!
+    if (board.ply > 0 && isRepetition(board)) return 0; 
 
     int ttFrom = -1, ttTo = -1;
     TTEntry& ttEntry = TT[board.hashKey & TT_MASK]; 
@@ -155,13 +156,23 @@ inline int negamax(BoardState& board, int depth, int alpha, int beta, int plyFro
 
     bool currentlyInCheck = inCheck(board, board.sideToMove);
     
-    // Null Move Pruning
+    // FIX 2: Null Move Pruning Hash Key updates to prevent TT Poisoning
     if (allowNull && depth >= 3 && !currentlyInCheck) {
         int staticEval = evaluate(board);
         if (staticEval >= beta) {
             BoardState nullBoard = board;
+            
+            // Incrementally hash out the En Passant square if it existed
+            if (nullBoard.enPassantSquare != -1) {
+                nullBoard.hashKey ^= epKeys[nullBoard.enPassantSquare];
+                nullBoard.enPassantSquare = -1; 
+            }
+            
+            // Switch the turn
             nullBoard.sideToMove = (board.sideToMove == WHITE) ? BLACK : WHITE;
-            nullBoard.enPassantSquare = -1; 
+            
+            // Incrementally hash the new turn so it doesn't collide with the real board!
+            nullBoard.hashKey ^= sideKey;
             
             int R = 2; 
             int nullScore = -negamax(nullBoard, depth - 1 - R, -beta, -beta + 1, plyFromRoot + 1, false);
@@ -256,7 +267,6 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     // ==========================================
     // 1. CHECK OPENING BOOK FIRST!
     // ==========================================
-    // FIX: Print the actual Polyglot Hash so we can verify it against the standard!
     std::cout << "info string Polyglot Hash: " << std::hex << computePolyglotHash(board) << std::dec << "\n";
     Move bookMove = getBookMove(board);
     
@@ -294,14 +304,13 @@ inline Move getBestMoveIterative(BoardState& board, long long baseTimeMs) {
     Move previousBestMove = moves[0];
 
     for (int depth = 1; depth <= MAX_PLY; depth++) {
-        Move bestMoveThisDepth = previousBestMove; // FIX: default to previous best move
+        Move bestMoveThisDepth = previousBestMove;
         int bestScoreThisDepth = -1000000;
         
         int alpha = -1000000;
         int beta = 1000000;
         int movesSearched = 0;
 
-        // FIX: Tell the move sorter to prioritize the previous best move to break 0.00 score ties
         int ttFrom = previousBestMove.fromSquare;
         int ttTo = previousBestMove.toSquare;
         
