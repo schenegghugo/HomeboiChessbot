@@ -1,16 +1,25 @@
-#include "precomputed.h"
-#include "uci.h"
-#include "book.h" 
+#include "board.hpp"
+#include "movegen.hpp"
+#include "magics.hpp"
+#include "search.hpp"
+#include "uci.hpp"
+#include "book.hpp" // <-- Add this
+#include <iostream>
 
 int main() {
-    // 1. Initialize engine mathematics
-    precomputeData();
+    // Initialize move generation lookup tables
+    Attacks::init_leapers();
+    Magics::init_magic_bitboards();
 
-    // 2. Load the Polyglot Opening Book into RAM!
-    loadOpeningBook("/home/hugo/Work/projects/Chessbot/src/Cerebellum_Light_Poly.bin");
+    // Transition Table, remembers the best moves
+    TT::init_zobrist();
+    TT::init_tt();
 
-    // 3. Start listening for GUI commands
-    uciLoop();
+    // Load Opening Book into RAM
+    Book::load("book.bin"); // <-- Add this
+
+    // Start listening to the GUI!
+    UCI::uci_loop();
 
     return 0;
 }
