@@ -1,11 +1,11 @@
 # HomeboiChessbot
 **HomeboiChessbot** (aka Chessboi) is a fully functional, UCI-compatible chess engine written from scratch in C++. 
 
-## Features (v2.3 - The Theory Update)
+## Features (v3.0 - The Polyglot Update)
 * **Protocol:** Fully supports the Universal Chess Interface (UCI), allowing it to be plugged into almost any modern chess GUI.
 * **Opening Book Support:** Natively reads standard `.bin` Polyglot opening books. Loads directly into RAM for instant (`< 0.1ms`) binary-search lookups, allowing Chessboi to play grandmaster opening theory without using the clock. Uses weighted randomness to ensure varied games!
-* **Board Representation:** 1D 64-Square Array.
-* **Move Generation:** Blazing fast pseudo-legal move generation within the search tree, with strict legal-move filtering at the root to prevent illegal timelines.
+* **Board Representation:** 64-bit **Bitboard Architecture**. Chessboi completely dropped its old 1D array to map pieces to 64-bit integers. This allows the engine to calculate attacks, occupancies, and piece movements instantly using ultra-fast bitwise operations.
+* **Move Generation:** Blazing fast pseudo-legal move generation natively utilizing **Magic Bitboards** for sliding pieces (Rooks, Bishops, Queens). Features strict legal-move filtering at the root to prevent illegal timelines.
 * **Search Algorithm (The Brain):** 
   * **Principal Variation Search (PVS / NegaScout):** A highly optimized zero-window search algorithm that drastically reduces the search tree, scaling tactical depth much higher than standard Alpha-Beta.
   * **Iterative Deepening:** Searches progressively deeper, allowing for dynamic time management.
@@ -35,41 +35,43 @@ Because Chessboi uses the UCI protocol, it does not have its own graphical inter
 
 **Setup Instructions:**
 1. Download the compiled executable from the Releases tab (or build it yourself).
-2. Download a Polyglot `.bin` opening book (e.g., `Titans.bin` or `Human.bin`) and place it in the same folder as the executable.
-3. Open your Chess GUI.
-4. Go to **Engine Settings** -> **Install New Engine**.
-5. Select the `chessboi` executable file.
-6. Start a new game and select Chessboi as your opponent!
+2. Download a Polyglot `.bin` opening book (e.g., `Titans.bin`, `komodo.bin`, or `Human.bin`).
+3. **IMPORTANT:** Rename the downloaded book file to `book.bin` and place it in the exact same folder as the Chessboi executable.
+4. Open your Chess GUI.
+5. Go to **Engine Settings** -> **Install New Engine**.
+6. Select the `Chessboi` executable file.
+7. Start a new game and select Chessboi as your opponent!
 
-*(Note: As of v2.0, Chessboi fully supports Blitz and Bullet time controls! He will manage his own clock dynamically to avoid flagging.)*
+*(Note: As of v3.0, Chessboi fully supports Blitz and Bullet time controls! He will manage his own clock dynamically to avoid flagging, and will instantly blitz out opening theory using the Polyglot book.)*
 
 ## Building from Source
-If you want to compile Chessboi yourself, clone the repository and compile using `g++` (Make sure to use the `-O3` flag for maximum speed!).
+If you want to compile Chessboi yourself, clone the repository and compile using `g++` (Make sure to use the `-O3` flag for maximum speed and `-std=c++20`!).
 
 **Linux / macOS:**
 ```bash
-git clone https://github.com/schenegghugo/HomeboiChessbot/
+git clone https://github.com/schenegghugo/HomeboiChessbot.git
 cd HomeboiChessbot/src
-g++ *.cpp -std=c++17 -O3 -o chessboi
-./chessboi
+g++ -O3 -std=c++20 -Wall -Wextra main.cpp -o Chessboi
+./Chessboi
 ```
 
 **Windows (MinGW):**
 ```bash
-g++ *.cpp -std=c++17 -O3 -o chessboi.exe
-chessboi.exe
+g++ -O3 -std=c++20 -Wall -Wextra main.cpp -o Chessboi.exe
+Chessboi.exe
 ```
 
 ## Roadmap / Future Updates
-Chessboi has crossed the threshold into a competitive search engine. The next major milestones focus on advanced positional understanding and search optimization:
-- [x] **Time Management:** Iterative Deepening and dynamic clock scaling.
+Chessboi has crossed the threshold into a highly competitive search engine. The next major milestones focus on endgame perfection and modern evaluation techniques:
+- [x] **Bitboard Architecture:** Blazing fast 64-bit board representation and Magic Bitboards.
 - [x] **Transposition Tables:** Zobrist Hashing for position recall.
 - [x] **Quiescence Search:** Defeating the Horizon Effect.
-- [x] **Principal Variation Search (PVS):** A zero-window search algorithm to squeeze even more tactical depth out of the engine and eliminate 1000-centipawn blunders.
-- [x] **Check Evasions in Q-Search:** Expanding Quiescence Search to handle forcing checks, not just captures.
-- [x] **Advanced Positional Evaluation:** Penalizing doubled/isolated pawns and rewarding piece mobility to prevent getting squeezed in the middlegame.
+- [x] **Principal Variation Search (PVS):** A zero-window search algorithm to squeeze even more tactical depth out of the engine.
+- [x] **Advanced Positional Evaluation:** Penalizing doubled/isolated pawns and rewarding piece mobility.
 - [x] **Opening Book Support:** Allowing Chessboi to read `.bin` Polyglot opening books to survive aggressive theory.
 - [ ] **Endgame Tablebases:** Syzygy tablebase support for perfect play in 5 and 6-piece endgames.
+- [ ] **Multi-threading (Lazy SMP):** Allowing the engine to utilize multiple CPU cores simultaneously.
+- [ ] **NNUE Evaluation:** Upgrading from Hand-Crafted Evaluation (HCE) to a Neural Network.
 
 ## Author
 Created by **Hugo Schenegg**. 
