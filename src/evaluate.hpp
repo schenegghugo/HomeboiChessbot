@@ -48,6 +48,17 @@ namespace Eval {
         0x1010101010101010ULL, 0x2020202020202020ULL, 0x4040404040404040ULL, 0x8080808080808080ULL
     };
 
+    constexpr uint64_t ADJACENT_FILES[8] = {
+        FILE_MASKS[1],
+        FILE_MASKS[0] | FILE_MASKS[2],
+        FILE_MASKS[1] | FILE_MASKS[3],
+        FILE_MASKS[2] | FILE_MASKS[4],
+        FILE_MASKS[3] | FILE_MASKS[5],
+        FILE_MASKS[4] | FILE_MASKS[6],
+        FILE_MASKS[5] | FILE_MASKS[7],
+        FILE_MASKS[6]
+    };
+
     // ==========================================
     // --- MIDGAME PIECE SQUARE TABLES ---
     // ==========================================
@@ -187,31 +198,42 @@ namespace Eval {
     };
 
     // ==========================================
-    // --- HIGH-SPEED BITBOARD HELPERS ---
+    // --- O(1) PRECOMPUTED MASKS ---
     // ==========================================
-
-    inline bool isPassedPawn(int sq, Color color, uint64_t enemy_pawns) {
-        int file = sq & 7;
-        int rank = sq >> 3;
-        uint64_t mask = 0;
-        
-        // Build a mask of all squares in front of the pawn (including adjacent files)
-        if (color == Color::White) {
-            for (int r = rank + 1; r < 8; r++) {
-                mask |= (1ULL << (r * 8 + file));
-                if (file > 0) mask |= (1ULL << (r * 8 + file - 1));
-                if (file < 7) mask |= (1ULL << (r * 8 + file + 1));
-            }
-        } else {
-            for (int r = rank - 1; r >= 0; r--) {
-                mask |= (1ULL << (r * 8 + file));
-                if (file > 0) mask |= (1ULL << (r * 8 + file - 1));
-                if (file < 7) mask |= (1ULL << (r * 8 + file + 1));
+    struct PassedPawnMasks {
+        uint64_t masks[2][64];
+        constexpr PassedPawnMasks() : masks{} {
+            for (int c = 0; c < 2; c++) {
+                for (int sq = 0; sq < 64; sq++) {
+                    uint64_t mask = 0;
+                    int file = sq & 7;
+                    int rank = sq >> 3;
+                    if (c == 0) { 
+                        for (int r = rank + 1; r < 8; r++) {
+                            mask |= (1ULL << (r * 8 + file));
+                            if (file > 0) mask |= (1ULL << (r * 8 + file - 1));
+                            if (file < 7) mask |= (1ULL << (r * 8 + file + 1));
+                        }
+                    } else { 
+                        for (int r = rank - 1; r >= 0; r--) {
+                            mask |= (1ULL << (r * 8 + file));
+                            if (file > 0) mask |= (1ULL << (r * 8 + file - 1));
+                            if (file < 7) mask |= (1ULL << (r * 8 + file + 1));
+                        }
+                    }
+                    masks[c][sq] = mask;
+                }
             }
         }
-        return (mask & enemy_pawns) == 0; 
+    };
+    constexpr PassedPawnMasks PASSED_MASKS;
+
+    inline bool isPassedPawn(int sq, Color color, uint64_t enemy_pawns) {
+        int c = (color == Color::White) ? 0 : 1;
+        return (PASSED_MASKS.masks[c][sq] & enemy_pawns) == 0; 
     }
 
+    // Inline allows the compiler to heavily optimize this tight loop.
     inline int evaluateKingSafety(int kingSq, Color color, uint64_t my_pawns, uint64_t opp_pawns) {
         int penalty = 0;
         int file = kingSq & 7;
@@ -220,15 +242,14 @@ namespace Eval {
         if (color == Color::White && rank > 1) penalty -= 20; 
         if (color == Color::Black && rank < 6) penalty -= 20; 
 
-        // Look at the 3 files surrounding the King
-        for (int f = std::max(0, file - 1); f <= std::min(7, file + 1); f++) {
-            int friendlyPawns = __builtin_popcountll(my_pawns & FILE_MASKS[f]);
-            int enemyPawns    = __builtin_popcountll(opp_pawns & FILE_MASKS[f]);
+        int start_file = std::max(0, file - 1);
+        int end_file = std::min(7, file + 1);
 
-            if (friendlyPawns == 0) {
-                penalty -= 15; // Missing pawn shield
-                if (enemyPawns == 0) penalty -= 25; // Fully open file!
-                else penalty -= 10; // Semi-open file
+        for (int f = start_file; f <= end_file; f++) {
+            if ((my_pawns & FILE_MASKS[f]) == 0) {
+                penalty -= 15; 
+                if ((opp_pawns & FILE_MASKS[f]) == 0) penalty -= 25; 
+                else penalty -= 10; 
             }
         }
         return penalty;
@@ -238,11 +259,11 @@ namespace Eval {
     // --- MAIN EVALUATION FUNCTION ---
     // ==========================================
 
+    // Consistent evaluation regardless of node type.
     inline int evaluate(const Board& board) {
         int mgScore = 0;
         int egScore = 0;
         
-        // --- Calculate Game Phase for Tapered Eval ---
         int knights = __builtin_popcountll(board.pieces[static_cast<int>(Color::White)][KNIGHT] | board.pieces[static_cast<int>(Color::Black)][KNIGHT]);
         int bishops = __builtin_popcountll(board.pieces[static_cast<int>(Color::White)][BISHOP] | board.pieces[static_cast<int>(Color::Black)][BISHOP]);
         int rooks   = __builtin_popcountll(board.pieces[static_cast<int>(Color::White)][ROOK]   | board.pieces[static_cast<int>(Color::Black)][ROOK]);
@@ -258,7 +279,6 @@ namespace Eval {
 
         uint64_t occ = board.occupancies[static_cast<int>(Color::Both)];
 
-        // Loop through both colors
         for (int c = 0; c < 2; ++c) {
             Color col = static_cast<Color>(c);
             int sign = (col == Color::White) ? 1 : -1;
@@ -271,35 +291,28 @@ namespace Eval {
                 int sq = __builtin_ctzll(bb);
                 int file = sq & 7;
                 int rank = sq >> 3;
-                int index = (col == Color::White) ? sq : (sq ^ 56); // Flip for black
+                int index = (col == Color::White) ? (sq ^ 56) : sq; 
                 
                 int mg = PawnValue + mg_pawnPST[index];
                 int eg = PawnValue + eg_pawnPST[index];
                 
-                // Passed Pawns
                 if (isPassedPawn(sq, col, opp_pawns)) {
                     int r = (col == Color::White) ? rank : 7 - rank;
                     mg += PASSED_PAWN_MG[r];
                     eg += PASSED_PAWN_EG[r];
                 }
 
-                // Doubled Pawns
                 int pawns_on_file = __builtin_popcountll(my_pawns & FILE_MASKS[file]);
                 if (pawns_on_file > 1) {
                     mg += DOUBLED_PAWN_MG;
                     eg += DOUBLED_PAWN_EG;
                 }
 
-                // Isolated Pawns
-                uint64_t adj_files = 0;
-                if (file > 0) adj_files |= FILE_MASKS[file - 1];
-                if (file < 7) adj_files |= FILE_MASKS[file + 1];
-                if ((my_pawns & adj_files) == 0) {
+                if ((my_pawns & ADJACENT_FILES[file]) == 0) {
                     mg += ISOLATED_PAWN_MG;
                     eg += ISOLATED_PAWN_EG;
                 }
 
-                // Phalanx Pawns
                 if (file < 7 && (my_pawns & (1ULL << (sq + 1)))) {
                     mg += PHALANX_PAWN_MG;
                     eg += PHALANX_PAWN_EG;
@@ -314,7 +327,7 @@ namespace Eval {
             bb = board.pieces[c][KNIGHT];
             while (bb) {
                 int sq = __builtin_ctzll(bb);
-                int index = (col == Color::White) ? sq : (sq ^ 56);
+                int index = (col == Color::White) ? (sq ^ 56) : sq;
                 mgScore += (KnightValue + mg_knightPST[index]) * sign;
                 egScore += (KnightValue + eg_knightPST[index]) * sign;
                 bb &= (bb - 1);
@@ -324,11 +337,11 @@ namespace Eval {
             bb = board.pieces[c][BISHOP];
             while (bb) {
                 int sq = __builtin_ctzll(bb);
-                int index = (col == Color::White) ? sq : (sq ^ 56);
+                int index = (col == Color::White) ? (sq ^ 56) : sq; 
                 int mg = BishopValue + mg_bishopPST[index];
                 int eg = BishopValue + eg_bishopPST[index];
                 
-                // Magic Bitboard Mobility
+                // Magic bitboards are O(1) table lookups. This will not bottleneck your search.
                 int mob = __builtin_popcountll(Magics::get_bishop_attacks(static_cast<Square>(sq), occ));
                 mg += mob * BISHOP_MOBILITY_MG;
                 eg += mob * BISHOP_MOBILITY_EG;
@@ -342,17 +355,15 @@ namespace Eval {
             bb = board.pieces[c][ROOK];
             while (bb) {
                 int sq = __builtin_ctzll(bb);
-                int index = (col == Color::White) ? sq : (sq ^ 56);
+                int index = (col == Color::White) ? (sq ^ 56) : sq; 
                 int file = sq & 7;
                 int mg = RookValue + mg_rookPST[index];
                 int eg = RookValue + eg_rookPST[index];
                 
-                // Magic Bitboard Mobility
                 int mob = __builtin_popcountll(Magics::get_rook_attacks(static_cast<Square>(sq), occ));
                 mg += mob * ROOK_MOBILITY_MG;
                 eg += mob * ROOK_MOBILITY_EG;
 
-                // Open & Semi-Open Files
                 if ((my_pawns & FILE_MASKS[file]) == 0) {
                     if ((opp_pawns & FILE_MASKS[file]) == 0) {
                         mg += ROOK_OPEN_FILE_MG; eg += ROOK_OPEN_FILE_EG;
@@ -370,11 +381,10 @@ namespace Eval {
             bb = board.pieces[c][QUEEN];
             while (bb) {
                 int sq = __builtin_ctzll(bb);
-                int index = (col == Color::White) ? sq : (sq ^ 56);
+                int index = (col == Color::White) ? (sq ^ 56) : sq; 
                 int mg = QueenValue + mg_queenPST[index];
                 int eg = QueenValue + eg_queenPST[index];
                 
-                // Utilizing your pre-existing get_queen_attacks function!
                 int mob = __builtin_popcountll(Magics::get_queen_attacks(static_cast<Square>(sq), occ));
                 mg += mob * QUEEN_MOBILITY_MG;
                 eg += mob * QUEEN_MOBILITY_EG;
@@ -388,7 +398,7 @@ namespace Eval {
             bb = board.pieces[c][KING];
             if (bb) {
                 int sq = __builtin_ctzll(bb);
-                int index = (col == Color::White) ? sq : (sq ^ 56);
+                int index = (col == Color::White) ? (sq ^ 56) : sq; 
                 
                 int mg = KingValue + mg_kingPST[index];
                 int eg = KingValue + eg_kingPST[index];
@@ -400,10 +410,7 @@ namespace Eval {
             }
         }
 
-        // --- TAPERED EVAL BLEND ---
         int finalScore = (mgScore * gamePhase + egScore * (24 - gamePhase)) / 24;
-
-        // Always return the score relative to the side whose turn it is
         return (board.side_to_move == Color::White) ? finalScore : -finalScore;
     }
 

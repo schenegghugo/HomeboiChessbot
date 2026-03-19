@@ -5,6 +5,7 @@
 #include "uci.hpp"
 #include "book.hpp" // <-- Add this
 #include <iostream>
+#include "tt.hpp"
 
 int main() {
     // Initialize move generation lookup tables
@@ -12,11 +13,11 @@ int main() {
     Magics::init_magic_bitboards();
 
     // Transition Table, remembers the best moves
-    TT::init_zobrist();
-    TT::init_tt();
+    Zobrist::init();
+    TT::init();
 
     // Load Opening Book into RAM
-    Book::load("book.bin"); // <-- Add this
+    Book::load("book.bin"); // <-- Opening theory
 
     // Start listening to the GUI!
     UCI::uci_loop();

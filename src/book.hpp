@@ -58,7 +58,6 @@ namespace Book {
     inline uint64_t compute_hash(const Board& board) {
         uint64_t hash = 0;
 
-        // 1. Hash Pieces (Polyglot Piece Mappings: WP=1, BP=0, WN=3, BN=2, WB=5, BB=4, etc.)
         for (int color = 0; color < 2; ++color) {
             for (int pt = 0; pt < 6; ++pt) {
                 uint64_t bb = board.pieces[color][pt];
@@ -72,19 +71,16 @@ namespace Book {
             }
         }
 
-        // 2. Hash Castling
-        if (board.castling_rights & 1) hash ^= PolyglotRandom64[768]; // White Kingside
-        if (board.castling_rights & 2) hash ^= PolyglotRandom64[769]; // White Queenside
-        if (board.castling_rights & 4) hash ^= PolyglotRandom64[770]; // Black Kingside
-        if (board.castling_rights & 8) hash ^= PolyglotRandom64[771]; // Black Queenside
+        if (board.castling_rights & 1) hash ^= PolyglotRandom64[768]; 
+        if (board.castling_rights & 2) hash ^= PolyglotRandom64[769]; 
+        if (board.castling_rights & 4) hash ^= PolyglotRandom64[770]; 
+        if (board.castling_rights & 8) hash ^= PolyglotRandom64[771]; 
 
-        // 3. Hash En Passant
         if (board.en_passant_square != -1) {
             int ep_file = board.en_passant_square % 8;
             int us = static_cast<int>(board.side_to_move);
             uint64_t our_pawns = board.pieces[us][PAWN];
             
-            // Polyglot strict rule: Only hash if an adjacent pawn can physically capture it
             int pawn_rank = (board.side_to_move == Color::White) ? 4 : 3;
             
             bool adjacent_enemy = false;
@@ -96,7 +92,6 @@ namespace Book {
             }
         }
 
-        // 4. Hash Turn
         if (board.side_to_move == Color::White) {
             hash ^= PolyglotRandom64[780];
         }
@@ -145,29 +140,29 @@ namespace Book {
             }
         }
 
-        // Translate Polyglot Move to Chessboi Format
         int poly_to = chosen_poly_move & 63;
         int poly_from = (chosen_poly_move >> 6) & 63;
         int poly_promo = (chosen_poly_move >> 12) & 7; // 1=N, 2=B, 3=R, 4=Q
 
-        int engine_promo = -1;
+        // 0 is our new default "no promotion" state
+        int engine_promo = 0; 
         if (poly_promo >= 1 && poly_promo <= 4) engine_promo = poly_promo;
 
-        // Map Castling moves (Polyglot handles them weirdly)
         int us = static_cast<int>(board.side_to_move);
         if (board.pieces[us][KING] & (1ULL << poly_from)) {
-            if (poly_from == 4 && poly_to == 7) poly_to = 6;   // e1h1 -> e1g1
-            if (poly_from == 4 && poly_to == 0) poly_to = 2;   // e1a1 -> e1c1
-            if (poly_from == 60 && poly_to == 63) poly_to = 62; // e8h8 -> e8g8
-            if (poly_from == 60 && poly_to == 56) poly_to = 58; // e8a8 -> e8c8
+            if (poly_from == 4 && poly_to == 7) poly_to = 6;   
+            if (poly_from == 4 && poly_to == 0) poly_to = 2;   
+            if (poly_from == 60 && poly_to == 63) poly_to = 62; 
+            if (poly_from == 60 && poly_to == 56) poly_to = 58; 
         }
 
-        // Match against valid pseudo-legal moves
         MoveGen::MoveList moves = MoveGen::generate_pseudo_legal_moves(board);
         for (int i = 0; i < moves.count; ++i) {
             MoveGen::Move m = moves.moves[i];
-            if (static_cast<int>(m.source) == poly_from && static_cast<int>(m.target) == poly_to) {
-                if (engine_promo == -1 || m.promoted_piece == engine_promo) {
+            
+            // Using bitwise getters
+            if (MoveGen::get_source(m) == poly_from && MoveGen::get_target(m) == poly_to) {
+                if (engine_promo == 0 || MoveGen::get_promoted_piece(m) == engine_promo) {
                     out_move = m;
                     return true;
                 }

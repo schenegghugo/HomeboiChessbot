@@ -3,7 +3,7 @@
 #include "board.hpp"
 #include "movegen.hpp"
 #include "search.hpp"
-#include "book.hpp" // <-- INCLUDED THE BOOK
+#include "book.hpp"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -12,11 +12,7 @@
 
 namespace UCI {
 
-    // --- BULLETPROOF FEN PARSER ---
     inline void load_fen(Board& board, const std::string& fen) {
-        // 1. HARD CLEAR ALL MEMORY
-        // If we don't do this, C++ leaves random garbage in the arrays,
-        // causing pieces to slide through each other and illegal moves!
         for (int i = 0; i < 2; ++i) {
             for (int j = 0; j < 6; ++j) board.pieces[i][j] = 0ULL;
             board.occupancies[i] = 0ULL;
@@ -26,7 +22,6 @@ namespace UCI {
         int file = 0, rank = 7;
         size_t i = 0;
 
-        // 2. Parse Piece Placement
         for (; i < fen.length() && fen[i] != ' '; i++) {
             char c = fen[i];
             if (c == '/') {
@@ -50,7 +45,6 @@ namespace UCI {
             }
         }
 
-        // 3. Update Occupancies (Crucial for move generation)
         for (int c = 0; c < 2; ++c) {
             for (int pt = 0; pt < 6; ++pt) {
                 board.occupancies[c] |= board.pieces[c][pt];
@@ -61,18 +55,16 @@ namespace UCI {
             board.occupancies[static_cast<int>(Color::Black)];
 
         if (i >= fen.length()) return;
-        i++; // Skip space
+        i++; 
 
-        // 4. Parse Side to Move
         if (i < fen.length()) {
             board.side_to_move = (fen[i] == 'w') ? Color::White : Color::Black;
-            i++; // Skip the 'w' or 'b'
+            i++; 
         }
 
         if (i >= fen.length()) return;
-        i++; // Skip space
+        i++; 
 
-        // 5. Parse Castling Rights (CRUCIAL FIX)
         board.castling_rights = 0;
         if (i < fen.length() && fen[i] == '-') {
             i++;
@@ -87,9 +79,8 @@ namespace UCI {
         }
 
         if (i >= fen.length()) return;
-        i++; // Skip space
+        i++; 
 
-        // 6. Parse En Passant Square (CRUCIAL FIX)
         board.en_passant_square = -1;
         if (i < fen.length() && fen[i] != '-') {
             if (i + 1 < fen.length()) {
@@ -102,20 +93,19 @@ namespace UCI {
         }
     }
 
-    // --- BULLETPROOF MOVE PARSER ---
     inline MoveGen::Move parse_move(const std::string& move_str, Board& board) {
         MoveGen::MoveList moves = MoveGen::generate_pseudo_legal_moves(board);
 
-        // Try exact to_string() match first
         for (int i = 0; i < moves.count; ++i) {
             MoveGen::Move move = moves.moves[i];
-            if (move.to_string() == move_str) {
+            
+            // Using helper method
+            if (MoveGen::move_to_string(move) == move_str) {
                 Board copy = board;
                 if (MoveGen::make_move(copy, move)) return move;
             }
         }
 
-        // FALLBACK: If to_string() format fails, manually match the source/target coordinates!
         if (move_str.length() >= 4) {
             int src_file = move_str[0] - 'a';
             int src_rank = move_str[1] - '1';
@@ -130,7 +120,9 @@ namespace UCI {
 
                 for (int i = 0; i < moves.count; ++i) {
                     MoveGen::Move move = moves.moves[i];
-                    if (static_cast<int>(move.source) == src_sq && static_cast<int>(move.target) == tgt_sq) {
+                    
+                    // Using helper methods
+                    if (MoveGen::get_source(move) == src_sq && MoveGen::get_target(move) == tgt_sq) {
                         Board copy = board;
                         if (MoveGen::make_move(copy, move)) return move;
                     }
@@ -138,10 +130,9 @@ namespace UCI {
             }
         }
 
-        return MoveGen::Move{static_cast<Square>(0), static_cast<Square>(0)};
+        return 0; // Return 0 (empty move) if not found
     }
 
-    // --- THE MAIN UCI LOOP ---
     inline void uci_loop() {
         Board board;
         std::string start_fen = "rnbqkbnr/pppppppp/8/8/8/8/PPPPPPPP/RNBQKBNR w KQkq - 0 1";
@@ -164,7 +155,7 @@ namespace UCI {
                 std::cout << "readyok\n";
             }
             else if (command == "ucinewgame") {
-                TT::clear_tt(); // Clears transposition tables on new games
+                TT::clear_tt(); 
                 load_fen(board, start_fen);
             }
             else if (command == "position") {
@@ -173,29 +164,25 @@ namespace UCI {
 
                 if (token == "startpos") {
                     load_fen(board, start_fen);
-                    iss >> token; // read "moves" if it exists
+                    iss >> token; 
                 }
                 else if (token == "fen") {
                     std::string fen = "";
-                    // Safely read FEN until we hit "moves" or end of string
                     while (iss >> token && token != "moves") {
                         fen += token + " ";
                     }
                     load_fen(board, fen);
                 }
 
-                // Parse and play the move history
                 if (token == "moves") {
                     while (iss >> token) {
                         MoveGen::Move m = parse_move(token, board);
 
-                        if (static_cast<int>(m.source) != static_cast<int>(m.target)) {
+                        // If m != 0, it's a valid move
+                        if (m != 0) {
                             MoveGen::make_move(board, m);
                         } else {
-                            // Print to GUI so we can debug desyncs
                             std::cout << "info string ERROR: Chessboi failed to parse " << token << std::endl;
-                            // CRITICAL FIX: If we fail to parse a move, stop applying moves!
-                            // This prevents the board state from desyncing from the GUI state.
                             break;
                         }
                     }
@@ -225,25 +212,32 @@ namespace UCI {
 
                     if (my_time > 0) {
                         time_limit_ms = (my_time / 30) + (my_inc / 2);
-                        if (time_limit_ms >= my_time) time_limit_ms = my_time - 500;
-                        if (time_limit_ms < 50) time_limit_ms = 50;
+
+                        if (my_time < 10000) {
+                            time_limit_ms = 100;
+                        }
+                        if (my_time < 500) {
+                            time_limit_ms = 20; 
+                        }
+                        if (time_limit_ms > my_time - 250) {
+                            time_limit_ms = my_time - 250;
+                        }
+                        if (time_limit_ms < 10) time_limit_ms = 10;
                     }
                 }
 
-                // --- NEW LOGIC: QUERY THE OPENING BOOK ---
-                MoveGen::Move book_move;
+                MoveGen::Move book_move = 0;
                 if (Book::get_book_move(board, book_move)) {
-                    // We found a move in the opening book! Output it instantly.
                     std::cout << "info string Playing book move" << std::endl;
-                    std::cout << "bestmove " << book_move.to_string() << std::endl;
+                    std::cout << "bestmove " << MoveGen::move_to_string(book_move) << std::endl;
                 } else {
-                    // Out of book! Engage the search engine!
                     MoveGen::Move best = Search::search_best_move(board, time_limit_ms);
 
-                    if (static_cast<int>(best.source) != static_cast<int>(best.target)) {
-                        std::cout << "bestmove " << best.to_string() << std::endl;
+                    // Checking validity of returned search move is clean!
+                    if (best != 0) {
+                        std::cout << "bestmove " << MoveGen::move_to_string(best) << std::endl;
                     } else {
-                        std::cout << "bestmove 0000" << std::endl; // Engine fallback/mate check
+                        std::cout << "bestmove 0000" << std::endl; 
                     }
                 }
             }
