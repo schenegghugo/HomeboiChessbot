@@ -4,6 +4,7 @@
 #include "movegen.hpp"
 #include "search.hpp"
 #include "book.hpp"
+#include "tt.hpp"
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -13,15 +14,13 @@
 namespace UCI {
 
     inline void load_fen(Board& board, const std::string& fen) {
-        for (int i = 0; i < 2; ++i) {
-            for (int j = 0; j < 6; ++j) board.pieces[i][j] = 0ULL;
-            board.occupancies[i] = 0ULL;
-        }
-        board.occupancies[static_cast<int>(Color::Both)] = 0ULL;
+        // 1. Clean the board state entirely using your built-in reset method!
+        board.reset();
 
         int file = 0, rank = 7;
         size_t i = 0;
 
+        // 2. Parse Pieces
         for (; i < fen.length() && fen[i] != ' '; i++) {
             char c = fen[i];
             if (c == '/') {
@@ -45,6 +44,7 @@ namespace UCI {
             }
         }
 
+        // 3. Update Occupancies
         for (int c = 0; c < 2; ++c) {
             for (int pt = 0; pt < 6; ++pt) {
                 board.occupancies[c] |= board.pieces[c][pt];
@@ -54,33 +54,48 @@ namespace UCI {
             board.occupancies[static_cast<int>(Color::White)] |
             board.occupancies[static_cast<int>(Color::Black)];
 
-        if (i >= fen.length()) return;
+        if (i >= fen.length()) {
+            board.sync_piece_on();
+            board.compute_initial_hash();
+            return;
+        }
         i++; 
 
+        // 4. Side to move
         if (i < fen.length()) {
             board.side_to_move = (fen[i] == 'w') ? Color::White : Color::Black;
             i++; 
         }
 
-        if (i >= fen.length()) return;
+        if (i >= fen.length()) {
+            board.sync_piece_on();
+            board.compute_initial_hash();
+            return;
+        }
         i++; 
 
+        // 5. Castling Rights (Using your constants)
         board.castling_rights = 0;
         if (i < fen.length() && fen[i] == '-') {
             i++;
         } else {
             while (i < fen.length() && fen[i] != ' ') {
-                if (fen[i] == 'K') board.castling_rights |= 1;
-                else if (fen[i] == 'Q') board.castling_rights |= 2;
-                else if (fen[i] == 'k') board.castling_rights |= 4;
-                else if (fen[i] == 'q') board.castling_rights |= 8;
+                if (fen[i] == 'K') board.castling_rights |= CASTLE_WK;
+                else if (fen[i] == 'Q') board.castling_rights |= CASTLE_WQ;
+                else if (fen[i] == 'k') board.castling_rights |= CASTLE_BK;
+                else if (fen[i] == 'q') board.castling_rights |= CASTLE_BQ;
                 i++;
             }
         }
 
-        if (i >= fen.length()) return;
+        if (i >= fen.length()) {
+            board.sync_piece_on();
+            board.compute_initial_hash();
+            return;
+        }
         i++; 
 
+        // 6. En Passant Square
         board.en_passant_square = -1;
         if (i < fen.length() && fen[i] != '-') {
             if (i + 1 < fen.length()) {
@@ -91,6 +106,23 @@ namespace UCI {
                 }
             }
         }
+        
+        // Skip past En Passant
+        while (i < fen.length() && fen[i] != ' ') i++;
+        if (i < fen.length() && fen[i] == ' ') i++;
+
+        // 7. Half-move clock (for 50-move rule)
+        if (i < fen.length()) {
+            size_t space_idx = fen.find(' ', i);
+            std::string half_move_str = fen.substr(i, space_idx - i);
+            try { board.half_move_clock = std::stoi(half_move_str); } catch(...) {}
+        }
+
+        // [!] THE CRITICAL FIX [!]
+        // Because of your genius board.hpp methods, initializing the new 
+        // O(1) Arrays and Zobrist Hashing takes exactly 2 lines of code:
+        board.sync_piece_on();
+        board.compute_initial_hash();
     }
 
     inline MoveGen::Move parse_move(const std::string& move_str, Board& board) {
@@ -98,8 +130,6 @@ namespace UCI {
 
         for (int i = 0; i < moves.count; ++i) {
             MoveGen::Move move = moves.moves[i];
-            
-            // Using helper method
             if (MoveGen::move_to_string(move) == move_str) {
                 Board copy = board;
                 if (MoveGen::make_move(copy, move)) return move;
@@ -120,8 +150,6 @@ namespace UCI {
 
                 for (int i = 0; i < moves.count; ++i) {
                     MoveGen::Move move = moves.moves[i];
-                    
-                    // Using helper methods
                     if (MoveGen::get_source(move) == src_sq && MoveGen::get_target(move) == tgt_sq) {
                         Board copy = board;
                         if (MoveGen::make_move(copy, move)) return move;
@@ -130,7 +158,7 @@ namespace UCI {
             }
         }
 
-        return 0; // Return 0 (empty move) if not found
+        return 0; 
     }
 
     inline void uci_loop() {
@@ -147,7 +175,7 @@ namespace UCI {
             iss >> command;
 
             if (command == "uci") {
-                std::cout << "id name Chessboi v2.0\n";
+                std::cout << "id name Chessboi v3.0\n";
                 std::cout << "id author Hugo\n";
                 std::cout << "uciok\n";
             }
@@ -178,8 +206,8 @@ namespace UCI {
                     while (iss >> token) {
                         MoveGen::Move m = parse_move(token, board);
 
-                        // If m != 0, it's a valid move
                         if (m != 0) {
+                            // make_move automatically updates history_ply, hash, and piece_on
                             MoveGen::make_move(board, m);
                         } else {
                             std::cout << "info string ERROR: Chessboi failed to parse " << token << std::endl;
@@ -213,12 +241,9 @@ namespace UCI {
                     if (my_time > 0) {
                         time_limit_ms = (my_time / 30) + (my_inc / 2);
 
-                        if (my_time < 10000) {
-                            time_limit_ms = 100;
-                        }
-                        if (my_time < 500) {
-                            time_limit_ms = 20; 
-                        }
+                        if (my_time < 10000) time_limit_ms = 100;
+                        if (my_time < 500) time_limit_ms = 20; 
+                        
                         if (time_limit_ms > my_time - 250) {
                             time_limit_ms = my_time - 250;
                         }
@@ -227,13 +252,12 @@ namespace UCI {
                 }
 
                 MoveGen::Move book_move = 0;
-                if (Book::get_book_move(board, book_move)) {
+                if (Book::get_book_move(board, book_move) && book_move != 0) {
                     std::cout << "info string Playing book move" << std::endl;
                     std::cout << "bestmove " << MoveGen::move_to_string(book_move) << std::endl;
                 } else {
                     MoveGen::Move best = Search::search_best_move(board, time_limit_ms);
 
-                    // Checking validity of returned search move is clean!
                     if (best != 0) {
                         std::cout << "bestmove " << MoveGen::move_to_string(best) << std::endl;
                     } else {
