@@ -5,6 +5,7 @@
 #include "search.hpp"
 #include "book.hpp"
 #include "tt.hpp"
+#include "syzygy.hpp" // <-- INCLUDED SYZYGY WRAPPER
 #include <iostream>
 #include <string>
 #include <sstream>
@@ -118,9 +119,6 @@ namespace UCI {
             try { board.half_move_clock = std::stoi(half_move_str); } catch(...) {}
         }
 
-        // [!] THE CRITICAL FIX [!]
-        // Because of your genius board.hpp methods, initializing the new 
-        // O(1) Arrays and Zobrist Hashing takes exactly 2 lines of code:
         board.sync_piece_on();
         board.compute_initial_hash();
     }
@@ -177,10 +175,35 @@ namespace UCI {
             if (command == "uci") {
                 std::cout << "id name Chessboi v3.0\n";
                 std::cout << "id author Hugo\n";
+                
+                // --- TELL THE GUI WE SUPPORT SYZYGY ---
+                std::cout << "option name SyzygyPath type string default <empty>\n";
+                
                 std::cout << "uciok\n";
             }
             else if (command == "isready") {
                 std::cout << "readyok\n";
+            }
+            else if (command == "setoption") {
+                std::string token;
+                iss >> token; // read "name"
+                if (token == "name") {
+                    std::string option_name;
+                    iss >> option_name;
+                    
+                    if (option_name == "SyzygyPath") {
+                        iss >> token; // read "value"
+                        if (token == "value") {
+                            std::string path;
+                            // Reads the rest of the string including spaces
+                            std::getline(iss >> std::ws, path);
+                            
+                            // Initialize Fathom
+                            Syzygy::init(path);
+                            std::cout << "info string Syzygy tablebases initialized. Max pieces: " << TB_LARGEST << "\n";
+                        }
+                    }
+                }
             }
             else if (command == "ucinewgame") {
                 TT::clear_tt(); 
@@ -207,7 +230,6 @@ namespace UCI {
                         MoveGen::Move m = parse_move(token, board);
 
                         if (m != 0) {
-                            // make_move automatically updates history_ply, hash, and piece_on
                             MoveGen::make_move(board, m);
                         } else {
                             std::cout << "info string ERROR: Chessboi failed to parse " << token << std::endl;

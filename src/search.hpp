@@ -3,6 +3,7 @@
 #include "movegen.hpp"
 #include "evaluate.hpp"
 #include "tt.hpp"
+#include "syzygy.hpp" // <-- INCLUDED SYZYGY WRAPPER
 #include <iostream>
 #include <chrono>
 #include <cstring>
@@ -174,6 +175,31 @@ namespace Search {
         
         if (ply > 0 && is_draw(board, hash)) return 0; 
         
+        // --- SYZYGY TABLEBASE PROBE ---
+        // We probe here, after draw checks but before TT probe.
+        // We ONLY probe if ply > 0, so that the root node still evaluates legal moves.
+        if (ply > 0) {
+            int tb_result = Syzygy::probe_wdl(board);
+
+            if (tb_result != TB_RESULT_FAILED) {
+                // We use 20000 for TB scores. 
+                // This guarantees it is much higher than any heuristic evaluation, 
+                // but safely below a forced checkmate score (30000).
+                if (tb_result == TB_WIN) {
+                    return 20000 - ply; // Win, penalize by ply to find fastest win
+                } else if (tb_result == TB_LOSS) {
+                    return -20000 + ply; // Loss, delay as much as possible
+                } else if (tb_result == TB_DRAW) {
+                    return 0; // Standard draw score
+                } else if (tb_result == TB_CURSED_WIN) {
+                    return 0; // We will win, but the 50-move rule will hit first
+                } else if (tb_result == TB_BLESSED_LOSS) {
+                    return 0; // We will lose, but the 50-move rule will hit first
+                }
+            }
+        }
+        // ------------------------------
+
         nodes_searched++;
         if ((nodes_searched & 2047) == 0) check_time();
         if (time_is_up) return 0;
@@ -330,6 +356,35 @@ namespace Search {
     }
 
     inline MoveGen::Move search_best_move(Board& board, long long base_time_ms) {
+        
+        // --- INSTANT SYZYGY ROOT PROBE ---
+        unsigned tb_res = Syzygy::probe_root(board);
+        if (tb_res != TB_RESULT_FAILED) {
+            unsigned from = TB_GET_FROM(tb_res);
+            unsigned to = TB_GET_TO(tb_res);
+            unsigned wdl = TB_GET_WDL(tb_res);
+            
+            MoveGen::MoveList moves = MoveGen::generate_pseudo_legal_moves(board);
+            for (int i = 0; i < moves.count; ++i) {
+                MoveGen::Move m = moves.moves[i];
+                if (MoveGen::get_source(m) == from && MoveGen::get_target(m) == to) {
+                    
+                    // Match found! Bypass the entire search and play it instantly.
+                    int score = 0;
+                    if (wdl == TB_WIN) score = 20000;
+                    else if (wdl == TB_LOSS) score = -20000;
+                    else if (wdl == TB_DRAW) score = 0;
+                    else if (wdl == TB_CURSED_WIN) score = 0;
+                    else if (wdl == TB_BLESSED_LOSS) score = 0;
+                    
+                    std::cout << "info depth 64 score cp " << score 
+                              << " nodes 1 time 0 pv " << MoveGen::move_to_string(m) << "\n";
+                    return m;
+                }
+            }
+        }
+        // ---------------------------------
+        
         TT::current_age++; 
         start_time_ms = get_time_ms();
         soft_time_limit = base_time_ms;

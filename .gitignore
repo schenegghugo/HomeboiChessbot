@@ -4,3 +4,9 @@ chessbot
 *.bin
 *.bin
 Chessboi
+
+# Keep Syzygy tablebases
+*.rtbw
+*.rtbz
+*.rtbwt
+*.rtbzt
