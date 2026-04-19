@@ -1,0 +1,4 @@
+data/
+src/gym_env/
+*.pth
+src/raw_weights*.txt
